@@ -1,0 +1,136 @@
+---
+title: "Barbell Activities"
+author: "J.C. French"
+date: "October 23, 2015"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+##Summary
+The goal of the Practical Machine Learning class assignment is to build a machine learning prediction model which accurately classifies what "classe" of activity is being performed based on data from activity monitors strapped to test subjects while they perform one of six different exercise activities.
+
+The original Human Activity Recognition (HAR)  study and data is documented at this website: http://groupware.les.inf.puc-rio.br/har
+
+52 features were selected from the training data. 10% of the training data was set aside to estimate an out of sample rate. A random forest machine learning model was developed from the remaining training data.
+
+Result: The resulting prediction model achieved an estimated 99.44% accuracy, with an estimated out of sample error rate of 0.56%. The resulting model was used to correctly predict all 20 classes from the pml-testing link, validating the model.
+
+```{r Libraries, echo=FALSE, message=FALSE}
+require(caret)
+require(tidyr)
+require(dplyr)
+require(randomForest)
+```
+##Source Data & Initial Load:
+The project data sets were collected from the following links:
+
+- pml-training link: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+- pml-testing link: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+*Note, from this point on, the data from the pml-testing link will be referred to as validation data.
+
+Each file was read into memory using a csv parser (read.csv). "NA" strings and blank entries were converted to NA values.
+```{r DataLoad, echo=FALSE}
+setwd("~/data/predMachLearn")
+rawtraining <- read.csv("./pml-training.csv", na.strings = c("NA", ""))
+rawvalidation <- read.csv("./pml-testing.csv", na.strings = c("NA", ""))
+
+```
+
+### Data Exploration & Feature Selection
+The assignment request a model to predict the "classe" outcome based on other features provided in the dataset. Of these remaining 159 features, 100 features are derived features which are only provided on records which summarize each "observational window". Since these calculated values were not provided in the validation test set, these 100 features were removed from consideration.
+
+Next, the remaining 59 features were reviewed to identify "near zero variance" features. This identified the "new_window" feature. The new_window line contains calculated summary data across an observational window. Careful manual review of the first few features revealed that the first 7 variables should be eliminated, as the information in these variables is not activity monitor metrics: "X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window". 
+
+The remaining training data set contained 52 features and one outcome, "classe".
+```{r Explore, echo=TRUE}
+str(rawtraining,list.len=15)
+table(rawtraining$classe)
+```
+
+```{r SelectFeatures, echo=FALSE}
+NATrain <- which(sapply(rawtraining, function(x) {sum(is.na(x))}) == 0)
+NAVal <- which(sapply(rawvalidation, function(x) {sum(is.na(x))}) == 0)
+raw <- rawtraining %>% 
+        select(NATrain) 
+rawv <- rawvalidation %>%
+        select(NAVal)
+nzv <- nearZeroVar(raw)
+raw <- raw %>% 
+        select(-nzv) %>%
+        select(-1:-6)
+nzvv <- nearZeroVar(rawv)
+rawv <- rawv %>%
+        select(-nzv) %>%
+        select(-1:-6)
+```
+
+### Partition into Training & Testing sets
+The raw training set was partitioned into a training set and a testing set with the caret tool, createDataPartition. The large sample set of 19622 observations allowed for a 90% training partition of 17622 observations while leaving a large  testing set to estimate the accuracy of the prediction model.
+```{r Partition, echo=FALSE}
+set.seed(1234)
+inTrain <- createDataPartition(raw$classe,p=0.9,list=F)
+training <- raw[inTrain,]
+testing <- raw[-inTrain,]
+```
+
+### Exploratory Plot
+Next, the "caret" package's featurePlot function was used to graphically explore the training data. While some data trends show up, interpreting these clusters was not feasible within the limited scope of this analysis. The following pairwise graph presents many clusters, but most cluster do not provide visually distinguishable groupings.
+
+```{r featurePlot, echo=FALSE, fig.width = 10, fig.height = 10}
+feat <- training %>% 
+        select(roll_belt,yaw_belt,
+               magnet_dumbbell_z,magnet_dumbbell_y,
+               pitch_forearm,pitch_belt,
+               total_accel_belt,classe) 
+feat$classe <- factor(feat$classe, levels=c("E","D","A","B","C"))
+featurePlot(x=feat[,1:8],
+            y=feat[,8],
+            plot="pairs" )
+```
+
+### Training a Random Forest Model 
+A Random Forest prediction model was constructed from the training data using 4 fold cross-validation. Based on the training set cross validation, the OOB estimated error rate was 0.42%. Since this error rate was derived internally withing the training set, we expect this error rate to be a little low.
+```{r Training, echo=TRUE}
+fit <-train(classe ~ ., data=training, 
+            model="rf",
+            trControl=trainControl(allowParallel=T, 
+                                   method="cv", 
+                                   number=4)
+            )
+fit
+fit$finalModel
+```
+
+### Varaible Importance
+The caret "varImp" function provides insight into which features have the greated impact in our random forest model. 
+```{r VarImpPlot, echo=FALSE, fig.width = 6, fig.height = 10}
+fitImp <- varImp(fit)
+plot(fitImp, main = "HAR Random Forest Variable Importance")
+```
+
+### Testing vs. Cross Validation
+Once the model was trained, it was used to predict "classe" outcomes for the testing data. Test Accuracy for this model was "0.9944", with a tight confidence interval and strongly significant P-Value. The estimated out of sample rate is 0.56%, (1 - accuracy). Note that this error rate is a slightly bigger than the estimated OOB error rate from the Training set, 0.42%. The confusion matrix and statistics follow in-line.
+```{r Testing, echo=TRUE}
+prediction <- predict(fit, newdata=testing)
+confusionMatrix(testing$classe,prediction)
+```
+
+### Validation
+The "classe" value was predicted classes for the validation observation With the random forest model. 
+```{r Validation, echo=FALSE}
+validpredict <- predict(fit,newdata=rawv)
+```
+### Results
+Using the code snippet provided by Proffesor Leek, the predicted 20 valdiation values were converted into a character array and used to generate 20 validation files. These files were submitted without any errors.
+```{r submission, echo=FALSE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}  
+ pml_write_files(as.character(validpredict))
+```
